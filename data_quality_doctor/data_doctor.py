@@ -3,11 +3,13 @@
 import pandas as pd
 import os
 import re
-from openpyxl import load_workbook, Workbook
+from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
 from difflib import SequenceMatcher
-from typing import Optional
+from typing import Optional, List, Tuple, Dict
+from collections import defaultdict
+import glob
 
 class DataDoctor:
     """
@@ -69,13 +71,91 @@ class DataDoctor:
 
         return completeness_df
 
+    @staticmethod
+    def similar(a: str, b: str) -> float:
+        """
+        Calculate similarity ratio between two strings.
+        
+        Args:
+            a (str): First string.
+            b (str): Second string.
+        
+        Returns:
+            float: Similarity ratio.
+        """
+        return SequenceMatcher(None, a, b).ratio()
+
+    @staticmethod
+    def is_pii(column_name: str) -> bool:
+        """
+        Check if a column name indicates personally identifiable information (PII).
+        
+        Args:
+            column_name (str): Column name to check.
+        
+        Returns:
+            bool: True if column name indicates PII, False otherwise.
+        """
+        pii_keywords = ["name", "dob", "date of birth", "age", "contact number"]
+        for keyword in pii_keywords:
+            if DataDoctor.similar(column_name.lower(), keyword) > 0.8:
+                return True
+        return False
+
+    @staticmethod
+    def read_all_structured_files(directory_path: str) -> List[Tuple[str, pd.DataFrame]]:
+        """
+        Read all CSV and Excel files from a directory and return their data as dataframes.
+        
+        Args:
+            directory_path (str): Path to the directory containing files.
+        
+        Returns:
+            List[Tuple[str, pd.DataFrame]]: List of tuples containing file paths and dataframes.
+        """
+        all_files = glob.glob(os.path.join(directory_path, "*.csv")) + glob.glob(os.path.join(directory_path, "*.xlsx"))
+        all_sheets = []
+        
+        for file_path in all_files:
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+                df = DataDoctor.clean_column_names(df)
+                all_sheets.append((file_path, df))
+            elif file_path.endswith('.xlsx'):
+                xls = pd.ExcelFile(file_path)
+                for sheet_name in xls.sheet_names:
+                    df = pd.read_excel(file_path, sheet_name=sheet_name)
+                    df = DataDoctor.clean_column_names(df)
+                    all_sheets.append((f"{file_path} - {sheet_name}", df))
+        
+        return all_sheets
+
+    @staticmethod
+    def find_critical_elements(all_sheets: List[Tuple[str, pd.DataFrame]]) -> Dict[str, List[str]]:
+        """
+        Find critical elements (columns) that appear in multiple files.
+        
+        Args:
+            all_sheets (List[Tuple[str, pd.DataFrame]]): List of tuples containing file paths and dataframes.
+        
+        Returns:
+            Dict[str, List[str]]: Dictionary with column names as keys and list of file paths as values.
+        """
+        column_files_map = defaultdict(list)
+        for file_path, df in all_sheets:
+            for column in df.columns:
+                column_files_map[column].append(file_path)
+        
+        critical_elements = {column: files for column, files in column_files_map.items() if len(files) > 1}
+        return critical_elements
+
     def configure_quality_check(self, csv_file_path: str, excel_file_path: Optional[str] = None) -> None:
         """
         Configure quality check and create an Excel template if it doesn't already exist.
         
         Args:
             csv_file_path (str): Path to the CSV file for which to configure the quality check.
-            excel_file_path (Optional[str]): Path to save the Excel template. If None, saves in the root directory.
+            excel_file_path (Optional[str]): Path to save the Excel template. If None, saves in the current directory.
         """
         if not excel_file_path:
             excel_file_path = os.path.join(os.getcwd(), 'data_quality_checks_template.xlsx')
@@ -141,60 +221,13 @@ class DataDoctor:
                 try:
                     if len(str(cell.value)) > max_length:
                         max_length = len(cell.value)
-                    except:
-                        pass
+                except Exception as e:
+                    print(f"Error adjusting width for column {column}: {e}")
             adjusted_width = (max_length + 2)
             sheet.column_dimensions[column].width = adjusted_width
 
         workbook.save(excel_file_path)
         print(f"Excel file '{excel_file_path}' created successfully with instructions.")
-
-    @staticmethod
-    def read_all_structured_files(directory_path: str) -> pd.DataFrame:
-        """
-        Read all CSV and Excel files from a directory and return their data as dataframes.
-        
-        Args:
-            directory_path (str): Path to the directory containing files.
-        
-        Returns:
-            List[Tuple[str, pd.DataFrame]]: List of tuples containing file paths and dataframes.
-        """
-        all_files = glob.glob(os.path.join(directory_path, "*.csv")) + glob.glob(os.path.join(directory_path, "*.xlsx"))
-        all_sheets = []
-        
-        for file_path in all_files:
-            if file_path.endswith('.csv'):
-                df = pd.read_csv(file_path)
-                df = DataDoctor.clean_column_names(df)
-                all_sheets.append((file_path, df))
-            elif file_path.endswith('.xlsx'):
-                xls = pd.ExcelFile(file_path)
-                for sheet_name in xls.sheet_names:
-                    df = pd.read_excel(file_path, sheet_name=sheet_name)
-                    df = DataDoctor.clean_column_names(df)
-                    all_sheets.append((f"{file_path} - {sheet_name}", df))
-        
-        return all_sheets
-
-    @staticmethod
-    def find_critical_elements(all_sheets: List[Tuple[str, pd.DataFrame]]) -> Dict[str, List[str]]:
-        """
-        Find critical elements (columns) that appear in multiple files.
-        
-        Args:
-            all_sheets (List[Tuple[str, pd.DataFrame]]): List of tuples containing file paths and dataframes.
-        
-        Returns:
-            Dict[str, List[str]]: Dictionary with column names as keys and list of file paths as values.
-        """
-        column_files_map = defaultdict(list)
-        for file_path, df in all_sheets:
-            for column in df.columns:
-                column_files_map[column].append(file_path)
-        
-        critical_elements = {column: files for column, files in column_files_map.items() if len(files) > 1}
-        return critical_elements
 
     def evaluate_data_quality(self, data_file_path: str, template_file_path: str) -> pd.DataFrame:
         """
@@ -253,7 +286,7 @@ class DataDoctor:
 
 # Example usage:
 if __name__ == "__main__":
-    data_file_path = 'data/case_allocations.csv'
+    data_file_path = ''
     template_file_path = 'data/data_quality_checks_template.xlsx'
 
     # Create an instance of DataDoctor
