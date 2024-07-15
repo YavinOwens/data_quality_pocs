@@ -1,5 +1,3 @@
-# data_quality_doctor/data_doctor.py
-
 import pandas as pd
 import os
 import re
@@ -10,6 +8,7 @@ from difflib import SequenceMatcher
 from typing import Optional, List, Tuple, Dict
 from collections import defaultdict
 import glob
+from IPython.display import display
 
 class DataDoctor:
     """
@@ -70,6 +69,33 @@ class DataDoctor:
         })
 
         return completeness_df
+
+    @staticmethod
+    def assess_uniqueness(df: pd.DataFrame, column_name: str) -> pd.DataFrame:
+        """
+        Assess uniqueness for a specific column in the dataframe.
+        
+        Args:
+            df (pd.DataFrame): Dataframe containing the data.
+            column_name (str): Name of the column to assess.
+        
+        Returns:
+            pd.DataFrame: DataFrame containing uniqueness assessment results.
+        """
+        total_rows = len(df)
+        unique_values = df[column_name].nunique()
+        duplicate_values = total_rows - unique_values
+        uniqueness_percentage = (unique_values / total_rows) * 100
+
+        uniqueness_df = pd.DataFrame({
+            'Column Name': [column_name],
+            'Total Rows': [total_rows],
+            'Unique Values': [unique_values],
+            'Duplicate Values': [duplicate_values],
+            'Uniqueness (%)': [round(uniqueness_percentage, 2)]
+        })
+
+        return uniqueness_df
 
     @staticmethod
     def similar(a: str, b: str) -> float:
@@ -229,7 +255,7 @@ class DataDoctor:
         workbook.save(excel_file_path)
         print(f"Excel file '{excel_file_path}' created successfully with instructions.")
 
-    def evaluate_data_quality(self, data_file_path: str, template_file_path: str) -> pd.DataFrame:
+    def evaluate_data_quality(self, data_file_path: str, template_file_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Evaluate data quality based on a template.
         
@@ -238,7 +264,7 @@ class DataDoctor:
             template_file_path (str): Path to the template file (.xlsx).
         
         Returns:
-            pd.DataFrame: DataFrame containing completeness assessment results.
+            Tuple[pd.DataFrame, pd.DataFrame]: DataFrames containing completeness and uniqueness assessment results.
         """
         df_template = self.read_data_quality_template(template_file_path)
 
@@ -250,12 +276,15 @@ class DataDoctor:
             raise ValueError("Unsupported file format. Please use .csv or .xlsx files.")
 
         completeness_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Missing Values', 'Non-Missing Values', 'Completeness (%)'])
+        uniqueness_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Unique Values', 'Duplicate Values', 'Uniqueness (%)'])
 
         if not df_data.empty:
             df_data = self.clean_column_names(df_data)
             for index, row in df_template.iterrows():
                 column_name = row['column_names']
                 test_completeness = str(row['test_completeness']).strip().lower() if pd.notna(row['test_completeness']) else 'not assessed'
+                test_uniqueness = str(row['test_uniqueness']).strip().lower() if pd.notna(row['test_uniqueness']) else 'not assessed'
+                
                 if test_completeness == 'yes':
                     if column_name in df_data.columns:
                         completeness_df = self.assess_completeness(df_data, column_name)
@@ -272,21 +301,42 @@ class DataDoctor:
                         'Completeness (%)': ['Not Assessed']
                     })
                     completeness_results = pd.concat([completeness_results, not_assessed_df], ignore_index=True)
+
+                if test_uniqueness == 'yes':
+                    if column_name in df_data.columns:
+                        uniqueness_df = self.assess_uniqueness(df_data, column_name)
+                        if not uniqueness_df.empty:
+                            uniqueness_results = pd.concat([uniqueness_results, uniqueness_df], ignore_index=True)
+                    else:
+                        print(f"Warning: Column '{column_name}' not found in data file.")
+                else:
+                    not_assessed_df = pd.DataFrame({
+                        'Column Name': [column_name],
+                        'Total Rows': ['N/A'],
+                        'Unique Values': ['N/A'],
+                        'Duplicate Values': ['N/A'],
+                        'Uniqueness (%)': ['Not Assessed']
+                    })
+                    uniqueness_results = pd.concat([uniqueness_results, not_assessed_df], ignore_index=True)
         else:
             print("Warning: The data file is empty.")
 
         if completeness_results.empty:
             print("No completeness analysis results to display.")
         else:
-            print("Completeness analysis results:")
-            print(completeness_results)
+            display(completeness_results)
 
-        return completeness_results
+        if uniqueness_results.empty:
+            print("No uniqueness analysis results to display.")
+        else:
+            display(uniqueness_results)
+
+        return completeness_results, uniqueness_results
 
 
 # Example usage:
 if __name__ == "__main__":
-    data_file_path = ''
+    data_file_path = ' '  # 
     template_file_path = 'data/data_quality_checks_template.xlsx'
 
     # Create an instance of DataDoctor
@@ -296,8 +346,12 @@ if __name__ == "__main__":
     data_doctor.configure_quality_check(data_file_path, template_file_path)
 
     # Evaluate data quality based on the template
-    completeness_results = data_doctor.evaluate_data_quality(data_file_path, template_file_path)
+    completeness_results, uniqueness_results = data_doctor.evaluate_data_quality(data_file_path, template_file_path)
 
     # Display the completeness results DataFrame
-    print("Completeness Results DataFrame:")
-    print(completeness_results)
+    display("Completeness Results DataFrame:")
+    display(completeness_results)
+
+    # Display the uniqueness results DataFrame
+    display("Uniqueness Results DataFrame:")
+    display(uniqueness_results)
