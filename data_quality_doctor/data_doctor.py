@@ -133,6 +133,39 @@ class DataDoctor:
         return consistency_df
 
     @staticmethod
+    def assess_validity(df: pd.DataFrame, column_name: str, valid_range: Optional[Tuple[float, float]] = None) -> pd.DataFrame:
+        """
+        Assess validity for a specific column in the dataframe.
+        
+        Args:
+            df (pd.DataFrame): Dataframe containing the data.
+            column_name (str): Name of the column to assess.
+            valid_range (Tuple[float, float], optional): Tuple specifying the valid range of values (min, max).
+        
+        Returns:
+            pd.DataFrame: DataFrame containing validity assessment results.
+        """
+        total_rows = len(df)
+        if valid_range:
+            min_val, max_val = valid_range
+            valid_values = df[column_name].apply(lambda x: min_val <= x <= max_val if pd.notnull(x) else False).sum()
+        else:
+            valid_values = total_rows  # Assuming all values are valid if no range provided.
+
+        invalid_values = total_rows - valid_values
+        validity_percentage = (valid_values / total_rows) * 100
+
+        validity_df = pd.DataFrame({
+            'Column Name': [column_name],
+            'Total Rows': [total_rows],
+            'Valid Values': [valid_values],
+            'Invalid Values': [invalid_values],
+            'Validity (%)': [round(validity_percentage, 2)]
+        })
+
+        return validity_df
+
+    @staticmethod
     def similar(a: str, b: str) -> float:
         """
         Calculate similarity ratio between two strings.
@@ -259,7 +292,8 @@ class DataDoctor:
             "test_validity": ["" for _ in column_names],
             "critical_data_element": critical_data_elements,
             "pattern": ["" for _ in column_names],  # Add columns for pattern and valid values
-            "valid_values": ["" for _ in column_names]
+            "valid_values": ["" for _ in column_names],
+            "valid_range": ["" for _ in column_names]  # Add column for valid range
         })
 
         with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
@@ -292,7 +326,7 @@ class DataDoctor:
         workbook.save(excel_file_path)
         print(f"Excel file '{excel_file_path}' created successfully with instructions.")
 
-    def evaluate_data_quality(self, data_file_path: str, template_file_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    def evaluate_data_quality(self, data_file_path: str, template_file_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Evaluate data quality based on a template.
         
@@ -301,7 +335,7 @@ class DataDoctor:
             template_file_path (str): Path to the template file (.xlsx).
         
         Returns:
-            Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: DataFrames containing completeness, uniqueness, and consistency assessment results.
+            Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]: DataFrames containing completeness, uniqueness, consistency, and validity assessment results.
         """
         df_template = self.read_data_quality_template(template_file_path)
 
@@ -315,6 +349,7 @@ class DataDoctor:
         completeness_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Missing Values', 'Non-Missing Values', 'Completeness (%)'])
         uniqueness_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Unique Values', 'Duplicate Values', 'Uniqueness (%)'])
         consistency_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Consistent Values', 'Inconsistent Values', 'Consistency (%)'])
+        validity_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Valid Values', 'Invalid Values', 'Validity (%)'])
 
         if not df_data.empty:
             df_data = self.clean_column_names(df_data)
@@ -323,6 +358,7 @@ class DataDoctor:
                 test_completeness = str(row['test_completeness']).strip().lower() if pd.notna(row['test_completeness']) else 'not assessed'
                 test_uniqueness = str(row['test_uniqueness']).strip().lower() if pd.notna(row['test_uniqueness']) else 'not assessed'
                 test_consistency = str(row['test_consistency']).strip().lower() if pd.notna(row['test_consistency']) else 'not assessed'
+                test_validity = str(row['test_validity']).strip().lower() if pd.notna(row['test_validity']) else 'not assessed'
                 
                 if test_completeness == 'yes':
                     if column_name in df_data.columns:
@@ -376,6 +412,24 @@ class DataDoctor:
                         'Consistency (%)': ['Not Assessed']
                     })
                     consistency_results = pd.concat([consistency_results, not_assessed_df], ignore_index=True)
+
+                if test_validity == 'yes':
+                    valid_range = tuple(map(float, row['valid_range'].split(';'))) if 'valid_range' in row and pd.notna(row['valid_range']) else None
+                    if column_name in df_data.columns:
+                        validity_df = self.assess_validity(df_data, column_name, valid_range)
+                        if not validity_df.empty:
+                            validity_results = pd.concat([validity_results, validity_df], ignore_index=True)
+                    else:
+                        print(f"Warning: Column '{column_name}' not found in data file.")
+                else:
+                    not_assessed_df = pd.DataFrame({
+                        'Column Name': [column_name],
+                        'Total Rows': ['N/A'],
+                        'Valid Values': ['N/A'],
+                        'Invalid Values': ['N/A'],
+                        'Validity (%)': ['Not Assessed']
+                    })
+                    validity_results = pd.concat([validity_results, not_assessed_df], ignore_index=True)
         else:
             print("Warning: The data file is empty.")
 
@@ -394,7 +448,12 @@ class DataDoctor:
         else:
             display(consistency_results)
 
-        return completeness_results, uniqueness_results, consistency_results
+        if validity_results.empty:
+            print("No validity analysis results to display.")
+        else:
+            display(validity_results)
+
+        return completeness_results, uniqueness_results, consistency_results, validity_results
 
 
 # Example usage:
@@ -409,7 +468,7 @@ if __name__ == "__main__":
     data_doctor.configure_quality_check(data_file_path, template_file_path)
 
     # Evaluate data quality based on the template
-    completeness_results, uniqueness_results, consistency_results = data_doctor.evaluate_data_quality(data_file_path, template_file_path)
+    completeness_results, uniqueness_results, consistency_results, validity_results = data_doctor.evaluate_data_quality(data_file_path, template_file_path)
 
     # Display the completeness results DataFrame
     display("Completeness Results DataFrame:")
@@ -422,3 +481,6 @@ if __name__ == "__main__":
     # Display the consistency results DataFrame
     display("Consistency Results DataFrame:")
     display(consistency_results)
+
+    # Display the validity results DataFrame
+    display(validity_results)
