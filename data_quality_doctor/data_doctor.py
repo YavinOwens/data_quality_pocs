@@ -113,7 +113,11 @@ class DataDoctor:
         """
         total_rows = len(df)
         if pattern:
-            consistent_values = df[column_name].apply(lambda x: bool(re.match(pattern, str(x)))).sum()
+            try:
+                consistent_values = df[column_name].apply(lambda x: bool(re.match(pattern, str(x)))).sum()
+            except re.error as e:
+                print(f"Error in regex pattern '{pattern}' for column '{column_name}': {e}")
+                consistent_values = 0
         elif valid_values:
             consistent_values = df[column_name].isin(valid_values).sum()
         else:
@@ -133,22 +137,26 @@ class DataDoctor:
         return consistency_df
 
     @staticmethod
-    def assess_validity(df: pd.DataFrame, column_name: str, valid_range: Optional[Tuple[float, float]] = None) -> pd.DataFrame:
+    def assess_validity(df: pd.DataFrame, column_name: str, valid_range: Optional[Tuple[str, str]] = None) -> pd.DataFrame:
         """
         Assess validity for a specific column in the dataframe.
         
         Args:
             df (pd.DataFrame): Dataframe containing the data.
             column_name (str): Name of the column to assess.
-            valid_range (Tuple[float, float], optional): Tuple specifying the valid range of values (min, max).
+            valid_range (Tuple[str, str], optional): Tuple specifying the valid range of values (start, end).
         
         Returns:
             pd.DataFrame: DataFrame containing validity assessment results.
         """
         total_rows = len(df)
         if valid_range:
-            min_val, max_val = valid_range
-            valid_values = df[column_name].apply(lambda x: min_val <= x <= max_val if pd.notnull(x) else False).sum()
+            try:
+                min_val, max_val = valid_range
+                valid_values = df[column_name].apply(lambda x: pd.to_datetime(min_val) <= pd.to_datetime(x) <= pd.to_datetime(max_val) if pd.notnull(x) else False).sum()
+            except Exception as e:
+                print(f"Error in date range '{valid_range}' for column '{column_name}': {e}")
+                valid_values = 0
         else:
             valid_values = total_rows  # Assuming all values are valid if no range provided.
 
@@ -164,6 +172,34 @@ class DataDoctor:
         })
 
         return validity_df
+
+    @staticmethod
+    def assess_accuracy(df: pd.DataFrame, column_name: str, reference_values: List[str]) -> pd.DataFrame:
+        """
+        Assess accuracy for a specific column in the dataframe.
+        
+        Args:
+            df (pd.DataFrame): Dataframe containing the data.
+            column_name (str): Name of the column to assess.
+            reference_values (List[str]): List of reference values to check against.
+        
+        Returns:
+            pd.DataFrame: DataFrame containing accuracy assessment results.
+        """
+        total_rows = len(df)
+        accurate_values = df[column_name].isin(reference_values).sum()
+        inaccurate_values = total_rows - accurate_values
+        accuracy_percentage = (accurate_values / total_rows) * 100
+
+        accuracy_df = pd.DataFrame({
+            'Column Name': [column_name],
+            'Total Rows': [total_rows],
+            'Accurate Values': [accurate_values],
+            'Inaccurate Values': [inaccurate_values],
+            'Accuracy (%)': [round(accuracy_percentage, 2)]
+        })
+
+        return accuracy_df
 
     @staticmethod
     def similar(a: str, b: str) -> float:
@@ -293,7 +329,8 @@ class DataDoctor:
             "critical_data_element": critical_data_elements,
             "pattern": ["" for _ in column_names],  # Add columns for pattern and valid values
             "valid_values": ["" for _ in column_names],
-            "valid_range": ["" for _ in column_names]  # Add column for valid range
+            "valid_range": ["" for _ in column_names],  # Add column for valid range
+            "reference_values": ["" for _ in column_names]  # Add column for reference values
         })
 
         with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
@@ -326,7 +363,7 @@ class DataDoctor:
         workbook.save(excel_file_path)
         print(f"Excel file '{excel_file_path}' created successfully with instructions.")
 
-    def evaluate_data_quality(self, data_file_path: str, template_file_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    def evaluate_data_quality(self, data_file_path: str, template_file_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Evaluate data quality based on a template.
         
@@ -335,7 +372,7 @@ class DataDoctor:
             template_file_path (str): Path to the template file (.xlsx).
         
         Returns:
-            Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]: DataFrames containing completeness, uniqueness, consistency, and validity assessment results.
+            Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]: DataFrames containing completeness, uniqueness, consistency, validity, and accuracy assessment results.
         """
         df_template = self.read_data_quality_template(template_file_path)
 
@@ -350,6 +387,7 @@ class DataDoctor:
         uniqueness_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Unique Values', 'Duplicate Values', 'Uniqueness (%)'])
         consistency_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Consistent Values', 'Inconsistent Values', 'Consistency (%)'])
         validity_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Valid Values', 'Invalid Values', 'Validity (%)'])
+        accuracy_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Accurate Values', 'Inaccurate Values', 'Accuracy (%)'])
 
         if not df_data.empty:
             df_data = self.clean_column_names(df_data)
@@ -359,6 +397,7 @@ class DataDoctor:
                 test_uniqueness = str(row['test_uniqueness']).strip().lower() if pd.notna(row['test_uniqueness']) else 'not assessed'
                 test_consistency = str(row['test_consistency']).strip().lower() if pd.notna(row['test_consistency']) else 'not assessed'
                 test_validity = str(row['test_validity']).strip().lower() if pd.notna(row['test_validity']) else 'not assessed'
+                test_accuracy = str(row['test_accuracy']).strip().lower() if pd.notna(row['test_accuracy']) else 'not assessed'
                 
                 if test_completeness == 'yes':
                     if column_name in df_data.columns:
@@ -414,7 +453,7 @@ class DataDoctor:
                     consistency_results = pd.concat([consistency_results, not_assessed_df], ignore_index=True)
 
                 if test_validity == 'yes':
-                    valid_range = tuple(map(float, row['valid_range'].split(';'))) if 'valid_range' in row and pd.notna(row['valid_range']) else None
+                    valid_range = tuple(row['valid_range'].split(';')) if 'valid_range' in row and pd.notna(row['valid_range']) else None
                     if column_name in df_data.columns:
                         validity_df = self.assess_validity(df_data, column_name, valid_range)
                         if not validity_df.empty:
@@ -430,6 +469,25 @@ class DataDoctor:
                         'Validity (%)': ['Not Assessed']
                     })
                     validity_results = pd.concat([validity_results, not_assessed_df], ignore_index=True)
+
+                if test_accuracy == 'yes':
+                    reference_values = row['reference_values'].split(';') if 'reference_values' in row and pd.notna(row['reference_values']) else None
+                    if column_name in df_data.columns and reference_values:
+                        accuracy_df = self.assess_accuracy(df_data, column_name, reference_values)
+                        if not accuracy_df.empty:
+                            accuracy_results = pd.concat([accuracy_results, accuracy_df], ignore_index=True)
+                    else:
+                        print(f"Warning: Column '{column_name}' not found in data file or no reference values provided.")
+                else:
+                    not_assessed_df = pd.DataFrame({
+                        'Column Name': [column_name],
+                        'Total Rows': ['N/A'],
+                        'Accurate Values': ['N/A'],
+                        'Inaccurate Values': ['N/A'],
+                        'Accuracy (%)': ['Not Assessed']
+                    })
+                    accuracy_results = pd.concat([accuracy_results, not_assessed_df], ignore_index=True)
+
         else:
             print("Warning: The data file is empty.")
 
@@ -453,13 +511,18 @@ class DataDoctor:
         else:
             display(validity_results)
 
-        return completeness_results, uniqueness_results, consistency_results, validity_results
+        if accuracy_results.empty:
+            print("No accuracy analysis results to display.")
+        else:
+            display(accuracy_results)
+
+        return completeness_results, uniqueness_results, consistency_results, validity_results, accuracy_results
 
 
 # Example usage:
 if __name__ == "__main__":
     data_file_path = 'your_data_file.csv'  # Update with the actual path
-    template_file_path = 'data/data_quality_checks_template.xlsx'
+    template_file_path = 'data_quality_checks_template.xlsx'
 
     # Create an instance of DataDoctor
     data_doctor = DataDoctor()
@@ -468,7 +531,7 @@ if __name__ == "__main__":
     data_doctor.configure_quality_check(data_file_path, template_file_path)
 
     # Evaluate data quality based on the template
-    completeness_results, uniqueness_results, consistency_results, validity_results = data_doctor.evaluate_data_quality(data_file_path, template_file_path)
+    completeness_results, uniqueness_results, consistency_results, validity_results, accuracy_results = data_doctor.evaluate_data_quality(data_file_path, template_file_path)
 
     # Display the completeness results DataFrame
     display("Completeness Results DataFrame:")
@@ -483,4 +546,9 @@ if __name__ == "__main__":
     display(consistency_results)
 
     # Display the validity results DataFrame
+    display("Validity Results DataFrame:")
     display(validity_results)
+
+    # Display the accuracy results DataFrame
+    display("Accuracy Results DataFrame:")
+    display(accuracy_results)
