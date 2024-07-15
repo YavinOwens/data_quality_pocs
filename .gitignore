@@ -1,2 +1,9 @@
-data
 data_quality_doctor/__pycache__
+data/appointments.csv
+data/case_allocations.csv
+data/clinics.csv
+data/hospitals.csv
+data/medical_assets.csv
+data/patients.csv
+data/providers.csv
+data/workforce.csv
