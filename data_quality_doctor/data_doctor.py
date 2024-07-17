@@ -112,12 +112,14 @@ class DataDoctor:
             pd.DataFrame: DataFrame containing consistency assessment results.
         """
         total_rows = len(df)
+        consistent_values = 0
+
         if pattern:
             try:
+                re.compile(pattern)
                 consistent_values = df[column_name].apply(lambda x: bool(re.match(pattern, str(x)))).sum()
             except re.error as e:
                 print(f"Error in regex pattern '{pattern}' for column '{column_name}': {e}")
-                consistent_values = 0
         elif valid_values:
             consistent_values = df[column_name].isin(valid_values).sum()
         else:
@@ -363,7 +365,7 @@ class DataDoctor:
         workbook.save(excel_file_path)
         print(f"Excel file '{excel_file_path}' created successfully with instructions.")
 
-    def evaluate_data_quality(self, data_file_path: str, template_file_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    def evaluate_data_quality(self, data_file_path: str, template_file_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Evaluate data quality based on a template.
         
@@ -372,7 +374,7 @@ class DataDoctor:
             template_file_path (str): Path to the template file (.xlsx).
         
         Returns:
-            Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]: DataFrames containing completeness, uniqueness, consistency, validity, and accuracy assessment results.
+            Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]: DataFrames containing completeness, uniqueness, consistency, validity, accuracy assessment results, and failing records.
         """
         df_template = self.read_data_quality_template(template_file_path)
 
@@ -389,6 +391,8 @@ class DataDoctor:
         validity_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Valid Values', 'Invalid Values', 'Validity (%)'])
         accuracy_results = pd.DataFrame(columns=['Column Name', 'Total Rows', 'Accurate Values', 'Inaccurate Values', 'Accuracy (%)'])
 
+        failing_records = pd.DataFrame()
+
         if not df_data.empty:
             df_data = self.clean_column_names(df_data)
             for index, row in df_template.iterrows():
@@ -404,34 +408,28 @@ class DataDoctor:
                         completeness_df = self.assess_completeness(df_data, column_name)
                         if not completeness_df.empty:
                             completeness_results = pd.concat([completeness_results, completeness_df], ignore_index=True)
+                        missing_records = df_data[df_data[column_name].isnull()]
+                        if not missing_records.empty:
+                            missing_records = missing_records.copy()
+                            missing_records.loc[:, 'Failed Test'] = missing_records.get('Failed Test', '') + ';Completeness'
+                            missing_records.loc[:, 'Reason'] = missing_records.get('Reason', '') + ';Missing Values'
+                            failing_records = pd.concat([failing_records, missing_records])
                     else:
                         print(f"Warning: Column '{column_name}' not found in data file.")
-                else:
-                    not_assessed_df = pd.DataFrame({
-                        'Column Name': [column_name],
-                        'Total Rows': ['N/A'],
-                        'Missing Values': ['N/A'],
-                        'Non-Missing Values': ['N/A'],
-                        'Completeness (%)': ['Not Assessed']
-                    })
-                    completeness_results = pd.concat([completeness_results, not_assessed_df], ignore_index=True)
 
                 if test_uniqueness == 'yes':
                     if column_name in df_data.columns:
                         uniqueness_df = self.assess_uniqueness(df_data, column_name)
                         if not uniqueness_df.empty:
                             uniqueness_results = pd.concat([uniqueness_results, uniqueness_df], ignore_index=True)
+                        duplicate_records = df_data[df_data.duplicated(column_name, keep=False)]
+                        if not duplicate_records.empty:
+                            duplicate_records = duplicate_records.copy()
+                            duplicate_records.loc[:, 'Failed Test'] = duplicate_records.get('Failed Test', '') + ';Uniqueness'
+                            duplicate_records.loc[:, 'Reason'] = duplicate_records.get('Reason', '') + ';Duplicate Values'
+                            failing_records = pd.concat([failing_records, duplicate_records])
                     else:
                         print(f"Warning: Column '{column_name}' not found in data file.")
-                else:
-                    not_assessed_df = pd.DataFrame({
-                        'Column Name': [column_name],
-                        'Total Rows': ['N/A'],
-                        'Unique Values': ['N/A'],
-                        'Duplicate Values': ['N/A'],
-                        'Uniqueness (%)': ['Not Assessed']
-                    })
-                    uniqueness_results = pd.concat([uniqueness_results, not_assessed_df], ignore_index=True)
 
                 if test_consistency == 'yes':
                     pattern = row['pattern'] if 'pattern' in row and pd.notna(row['pattern']) else None
@@ -440,17 +438,22 @@ class DataDoctor:
                         consistency_df = self.assess_consistency(df_data, column_name, pattern, valid_values)
                         if not consistency_df.empty:
                             consistency_results = pd.concat([consistency_results, consistency_df], ignore_index=True)
+                        if pattern:
+                            try:
+                                re.compile(pattern)
+                                inconsistent_records = df_data[~df_data[column_name].apply(lambda x: bool(re.match(pattern, str(x))))]
+                            except re.error as e:
+                                print(f"Error in regex pattern '{pattern}' for column '{column_name}': {e}")
+                                inconsistent_records = pd.DataFrame()
+                        elif valid_values:
+                            inconsistent_records = df_data[~df_data[column_name].isin(valid_values)]
+                        if not inconsistent_records.empty:
+                            inconsistent_records = inconsistent_records.copy()
+                            inconsistent_records.loc[:, 'Failed Test'] = inconsistent_records.get('Failed Test', '') + ';Consistency'
+                            inconsistent_records.loc[:, 'Reason'] = inconsistent_records.get('Reason', '') + ';Invalid Pattern or Value'
+                            failing_records = pd.concat([failing_records, inconsistent_records])
                     else:
                         print(f"Warning: Column '{column_name}' not found in data file.")
-                else:
-                    not_assessed_df = pd.DataFrame({
-                        'Column Name': [column_name],
-                        'Total Rows': ['N/A'],
-                        'Consistent Values': ['N/A'],
-                        'Inconsistent Values': ['N/A'],
-                        'Consistency (%)': ['Not Assessed']
-                    })
-                    consistency_results = pd.concat([consistency_results, not_assessed_df], ignore_index=True)
 
                 if test_validity == 'yes':
                     valid_range = tuple(row['valid_range'].split(';')) if 'valid_range' in row and pd.notna(row['valid_range']) else None
@@ -458,17 +461,16 @@ class DataDoctor:
                         validity_df = self.assess_validity(df_data, column_name, valid_range)
                         if not validity_df.empty:
                             validity_results = pd.concat([validity_results, validity_df], ignore_index=True)
+                        if valid_range:
+                            min_val, max_val = valid_range
+                            invalid_records = df_data[~df_data[column_name].apply(lambda x: pd.to_datetime(min_val) <= pd.to_datetime(x) <= pd.to_datetime(max_val) if pd.notnull(x) else False)]
+                        if not invalid_records.empty:
+                            invalid_records = invalid_records.copy()
+                            invalid_records.loc[:, 'Failed Test'] = invalid_records.get('Failed Test', '') + ';Validity'
+                            invalid_records.loc[:, 'Reason'] = invalid_records.get('Reason', '') + ';Out of Range'
+                            failing_records = pd.concat([failing_records, invalid_records])
                     else:
                         print(f"Warning: Column '{column_name}' not found in data file.")
-                else:
-                    not_assessed_df = pd.DataFrame({
-                        'Column Name': [column_name],
-                        'Total Rows': ['N/A'],
-                        'Valid Values': ['N/A'],
-                        'Invalid Values': ['N/A'],
-                        'Validity (%)': ['Not Assessed']
-                    })
-                    validity_results = pd.concat([validity_results, not_assessed_df], ignore_index=True)
 
                 if test_accuracy == 'yes':
                     reference_values = row['reference_values'].split(';') if 'reference_values' in row and pd.notna(row['reference_values']) else None
@@ -476,48 +478,33 @@ class DataDoctor:
                         accuracy_df = self.assess_accuracy(df_data, column_name, reference_values)
                         if not accuracy_df.empty:
                             accuracy_results = pd.concat([accuracy_results, accuracy_df], ignore_index=True)
+                        inaccurate_records = df_data[~df_data[column_name].isin(reference_values)]
+                        if not inaccurate_records.empty:
+                            inaccurate_records = inaccurate_records.copy()
+                            inaccurate_records.loc[:, 'Failed Test'] = inaccurate_records.get('Failed Test', '') + ';Accuracy'
+                            inaccurate_records.loc[:, 'Reason'] = inaccurate_records.get('Reason', '') + ';Invalid Reference Value'
+                            failing_records = pd.concat([failing_records, inaccurate_records])
                     else:
                         print(f"Warning: Column '{column_name}' not found in data file or no reference values provided.")
-                else:
-                    not_assessed_df = pd.DataFrame({
-                        'Column Name': [column_name],
-                        'Total Rows': ['N/A'],
-                        'Accurate Values': ['N/A'],
-                        'Inaccurate Values': ['N/A'],
-                        'Accuracy (%)': ['Not Assessed']
-                    })
-                    accuracy_results = pd.concat([accuracy_results, not_assessed_df], ignore_index=True)
-
         else:
             print("Warning: The data file is empty.")
 
-        if completeness_results.empty:
-            print("No completeness analysis results to display.")
+        failing_records['Failed Test'] = failing_records['Failed Test'].str.strip(';')
+        failing_records['Reason'] = failing_records['Reason'].str.strip(';')
+
+        return completeness_results, uniqueness_results, consistency_results, validity_results, accuracy_results, failing_records
+
+    def display_failing_records(self, failing_records: pd.DataFrame) -> None:
+        """
+        Display failing records in a dataframe format.
+        
+        Args:
+            failing_records (pd.DataFrame): DataFrame containing the failing records.
+        """
+        if failing_records.empty:
+            print("No failing records to display.")
         else:
-            display(completeness_results)
-
-        if uniqueness_results.empty:
-            print("No uniqueness analysis results to display.")
-        else:
-            display(uniqueness_results)
-
-        if consistency_results.empty:
-            print("No consistency analysis results to display.")
-        else:
-            display(consistency_results)
-
-        if validity_results.empty:
-            print("No validity analysis results to display.")
-        else:
-            display(validity_results)
-
-        if accuracy_results.empty:
-            print("No accuracy analysis results to display.")
-        else:
-            display(accuracy_results)
-
-        return completeness_results, uniqueness_results, consistency_results, validity_results, accuracy_results
-
+            display(failing_records)
 
 # Example usage:
 if __name__ == "__main__":
@@ -531,24 +518,27 @@ if __name__ == "__main__":
     data_doctor.configure_quality_check(data_file_path, template_file_path)
 
     # Evaluate data quality based on the template
-    completeness_results, uniqueness_results, consistency_results, validity_results, accuracy_results = data_doctor.evaluate_data_quality(data_file_path, template_file_path)
+    completeness_results, uniqueness_results, consistency_results, validity_results, accuracy_results, failing_records = data_doctor.evaluate_data_quality(data_file_path, template_file_path)
 
     # Display the completeness results DataFrame
-    display("Completeness Results DataFrame:")
+    print("Completeness Results DataFrame:")
     display(completeness_results)
 
     # Display the uniqueness results DataFrame
-    display("Uniqueness Results DataFrame:")
+    print("Uniqueness Results DataFrame:")
     display(uniqueness_results)
 
     # Display the consistency results DataFrame
-    display("Consistency Results DataFrame:")
+    print("Consistency Results DataFrame:")
     display(consistency_results)
 
     # Display the validity results DataFrame
-    display("Validity Results DataFrame:")
+    print("Validity Results DataFrame:")
     display(validity_results)
 
     # Display the accuracy results DataFrame
-    display("Accuracy Results DataFrame:")
+    print("Accuracy Results DataFrame:")
     display(accuracy_results)
+
+    # Display the failing records DataFrame
+    data_doctor.display_failing_records(failing_records)
